@@ -13,6 +13,7 @@ import { FACTORY_V2_ABI, ORACLE_ABI, PYTH_ABI } from "./abi";
 import {
   fetchDeviation,
   fetchMarkets,
+  fetchMarketsForPyth,
   fetchTokensAndPriceFeedIds,
 } from "./helper";
 
@@ -43,8 +44,9 @@ Web3Function.onRun(async (context: Web3FunctionContext) => {
   }
 
   const marketsResponse = await fetchMarkets();
+  const pythMarkets = await fetchMarketsForPyth();
   const markets = marketsResponse.markets.filter((market) =>
-    tokens.includes(market.token)
+    pythMarkets.includes(market.marketIndex)
   );
   console.log(`Read ${marketsResponse.markets.length} markets.`);
 
