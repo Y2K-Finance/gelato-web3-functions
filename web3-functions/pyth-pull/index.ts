@@ -101,23 +101,24 @@ Web3Function.onRun(async (context: Web3FunctionContext) => {
   }
 
   // Prepare pyth price update calldata
-  const callData = [];
   const pyth = new Contract(pythContract, PYTH_ABI, provider);
   const priceUpdateData = await connection.getPriceFeedsUpdateData(
     priceFeedIdsToUpdate
   );
-  const fee = await pyth.getUpdateFee(priceUpdateData);
-  // console.log(fee, JSON.stringify(priceUpdateData));
-
-  callData.push({
-    to: pythContract,
-    data: pyth.encodeFunctionData("updatePriceFeeds", [priceUpdateData]),
-    value: fee.toString(),
-  });
+  const updateFee = await pyth.getUpdateFee(priceUpdateData);
+  // console.log(updateFee.toString(), JSON.stringify(priceUpdateData));
 
   // Return execution call data
   return {
     canExec: true,
-    callData,
+    callData: [
+      {
+        to: pythContract,
+        data: pyth.interface.encodeFunctionData("updatePriceFeeds", [
+          priceUpdateData,
+        ]),
+        value: updateFee.toString(),
+      },
+    ],
   };
 });
