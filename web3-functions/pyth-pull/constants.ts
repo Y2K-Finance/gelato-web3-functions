@@ -1,0 +1,2 @@
+export const DIVISION_FACTOR = 10000;
+export const FACTORY_V2 = "0xC3179AC01b7D68aeD4f27a19510ffe2bfb78Ab3e";

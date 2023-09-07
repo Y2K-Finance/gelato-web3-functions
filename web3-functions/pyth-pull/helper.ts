@@ -33,24 +33,12 @@ export const fetchMarkets = async () => {
   return marketsResponse;
 };
 
-const Y2K_BACKEND_URL = "https://y2k-backend-git-pythsupport-y2k.vercel.app";
-
-export const fetchMarketsForPyth = async () => {
-  const data = await fetch(`${Y2K_BACKEND_URL}/api/pyth/markets`);
-  const { markets } = await data.json();
-  return markets;
-};
-
-export const fetchTokensAndPriceFeedIds = async (): Promise<{
-  tokens: string[];
-  priceFeedIds: string[];
+export const fetchPricefeeds = async (
+  endpoint: string
+): Promise<{
+  [key: string]: number;
 }> => {
-  const data = await fetch(`${Y2K_BACKEND_URL}/api/pyth/pricefeed`);
-  return await data.json();
-};
-
-export const fetchDeviation = async (): Promise<{ [key: string]: number }> => {
-  const data = await fetch(`${Y2K_BACKEND_URL}/api/pyth/deviation`);
-  const { deviations } = await data.json();
-  return deviations;
+  const data = await fetch(`${endpoint}/api/pyth/pricefeed`);
+  const { pricefeeds } = await data.json();
+  return pricefeeds;
 };

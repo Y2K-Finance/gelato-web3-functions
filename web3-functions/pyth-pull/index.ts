@@ -9,16 +9,10 @@ import {
 import { Contract } from "@ethersproject/contracts";
 import { BigNumber } from "ethers";
 import { ContractCallContext, Multicall } from "ethereum-multicall";
-import { FACTORY_V2_ABI, ORACLE_ABI, PYTH_ABI } from "./abi";
-import {
-  fetchDeviation,
-  fetchMarkets,
-  fetchMarketsForPyth,
-  fetchTokensAndPriceFeedIds,
-} from "./helper";
+import { PYTH_ABI } from "./abi";
+import { fetchPricefeeds } from "./helper";
+import { DIVISION_FACTOR } from "./constants";
 
-const DIVISION_FACTOR = 10000;
-const FACTORY_V2 = "0xC3179AC01b7D68aeD4f27a19510ffe2bfb78Ab3e";
 const connection = new EvmPriceServiceConnection(
   "https://xc-mainnet.pyth.network"
 );
@@ -31,136 +25,87 @@ Web3Function.onRun(async (context: Web3FunctionContext) => {
     ethersProvider: provider,
     tryAggregate: true,
   });
+  const pythContract = CONTRACT_ADDR["arbitrum"];
 
   // Fetch data
-  const deviation = await fetchDeviation();
-  const { tokens, priceFeedIds } = await fetchTokensAndPriceFeedIds();
-
-  if (priceFeedIds.length != tokens.length) {
-    return {
-      canExec: false,
-      message: "Token and Price feed Ids length mismatch",
-    };
+  const y2kBackendUrl = await context.secrets.get("Y2K_BACKEND_URL");
+  if (!y2kBackendUrl) {
+    return { canExec: false, message: `Y2K_BACKEND_URL not set in secrets` };
   }
 
-  const marketsResponse = await fetchMarkets();
-  const pythMarkets = await fetchMarketsForPyth();
-  const markets = marketsResponse.markets.filter((market) =>
-    pythMarkets.includes(market.marketIndex)
-  );
-  console.log(`Read ${marketsResponse.markets.length} markets.`);
+  const pricefeeds = await fetchPricefeeds(y2kBackendUrl);
+  console.log(`Read price feeds to track: ${JSON.stringify(pricefeeds)}`);
 
   // Read pyth price feeds
-  const pythPriceFeeds: { [key: string]: { price: BigNumber; feed: string } } =
-    {};
+  const priceFeedIds = Object.keys(pricefeeds);
   const latestPriceFeeds =
     (await connection.getLatestPriceFeeds(priceFeedIds)) || [];
   console.log(`Read ${latestPriceFeeds.length} price feeds`);
-  for (let i = 0; i < tokens.length; i += 1) {
-    const feed = latestPriceFeeds[i].getPriceUnchecked();
-    let pythPrice = BigNumber.from(feed.price);
-    // console.log("pyth price", pythPrice.toString(), "expo", feed.expo);
-    const decimals = feed.expo + 18;
-    if (decimals < 0) {
-      throw "Exponent too small";
-    }
-    pythPrice = pythPrice.mul(BigNumber.from(10).pow(decimals));
-    pythPriceFeeds[tokens[i]] = { price: pythPrice, feed: priceFeedIds[i] };
-  }
 
-  console.log(`Current prices are ${pythPriceFeeds}`);
-
-  // Read market oracles
-  const marketToOracleCallContext: ContractCallContext[] = markets.map(
-    (market, index) => ({
-      reference: index.toString(),
-      contractAddress: FACTORY_V2,
-      abi: FACTORY_V2_ABI,
+  // Read last updated prices
+  const priceGetContext: ContractCallContext[] = latestPriceFeeds.map(
+    (feed) => ({
+      reference: feed.id,
+      contractAddress: pythContract,
+      abi: PYTH_ABI,
       calls: [
         {
-          reference: "marketToOracle",
-          methodName: "marketToOracle",
-          methodParameters: [market.marketIndex],
+          reference: "getPriceUnsafe",
+          methodName: "getPriceUnsafe",
+          methodParameters: [`0x${feed.id}`],
         },
       ],
     })
   );
-  const marketToOracleCallResults = await multicall.call(
-    marketToOracleCallContext
-  );
-  const oracleAddresses = markets.map((market, index) => {
-    return marketToOracleCallResults.results[index.toString()]
-      .callsReturnContext[0].returnValues[0];
-  });
-
-  // Read oracle prices
-  const oracleDataCallContext: ContractCallContext[] = oracleAddresses.map(
-    (oracleAddress, index) => ({
-      reference: index.toString(),
-      contractAddress: oracleAddress,
-      abi: ORACLE_ABI,
-      calls: [
-        {
-          reference: "latestRoundData",
-          methodName: "latestRoundData",
-          methodParameters: [],
-        },
-        {
-          reference: "getLatestPrice",
-          methodName: "getLatestPrice",
-          methodParameters: [],
-        },
-      ],
-    })
-  );
-  const oracleDataCallResults = await multicall.call(oracleDataCallContext);
-  const oracleDatas = oracleAddresses.map((_, index) => {
-    const latestRoundDataReturnValues =
-      oracleDataCallResults.results[index.toString()].callsReturnContext[0]
-        .returnValues;
-    const getLatestPriceReturnValues =
-      oracleDataCallResults.results[index.toString()].callsReturnContext[1]
-        .returnValues;
-    return {
-      price: BigNumber.from(getLatestPriceReturnValues[0].hex),
-      updatedAt: BigNumber.from(latestRoundDataReturnValues[3].hex),
-    };
-  });
+  const priceGetCallResults = await multicall.call(priceGetContext);
 
   // Determine which price feeds need to be updated
   const priceFeedIdsToUpdate = [];
-  for (const [index, market] of markets.entries()) {
-    const pythPrice = pythPriceFeeds[market.token].price;
-    if (pythPrice.isZero()) continue;
+  const stalePeriod = 86400;
+  for (const feed of latestPriceFeeds) {
+    const returnData =
+      priceGetCallResults.results[feed.id].callsReturnContext[0];
+    if (!returnData.success) {
+      // Price never pushed
+      priceFeedIdsToUpdate.push(`0x${feed.id}`);
+      continue;
+    }
+    const onChainPrice = BigNumber.from(returnData.returnValues[0].hex);
+    const onChainPublishTime = BigNumber.from(
+      returnData.returnValues[3].hex
+    ).toNumber();
+    const priceInfo = feed.getPriceUnchecked();
+    const offChainPrice = BigNumber.from(priceInfo.price);
+    const allowedDivation = pricefeeds[`0x${feed.id}`];
 
-    const curDeviation = oracleDatas[index].price
-      .sub(pythPrice)
+    if (offChainPrice.isZero() || !allowedDivation) continue;
+
+    const timeDiff = priceInfo.publishTime - onChainPublishTime;
+    const curDeviation = onChainPrice
+      .sub(offChainPrice)
       .abs()
       .mul(DIVISION_FACTOR)
-      .div(pythPrice)
+      .div(offChainPrice)
       .toNumber();
-    const allowedDivation = deviation[market.token] || 0;
-
-    const timeDiff =
-      new Date().getTime() / 1000 - oracleDatas[index].updatedAt.toNumber();
 
     // Update if exceeds deviation allowance or staled for 24 hours
-    if (curDeviation > allowedDivation || timeDiff > 86400) {
-      priceFeedIdsToUpdate.push(pythPriceFeeds[market.token].feed);
+    if (curDeviation > allowedDivation || timeDiff > stalePeriod) {
+      priceFeedIdsToUpdate.push(`0x${feed.id}`);
     }
   }
 
   // Prepare pyth price update calldata
   const callData = [];
-  const pyth = new Contract(CONTRACT_ADDR["arbitrum"], PYTH_ABI, provider);
+  const pyth = new Contract(pythContract, PYTH_ABI, provider);
   if (priceFeedIdsToUpdate.length) {
     const priceUpdateData = await connection.getPriceFeedsUpdateData(
       priceFeedIdsToUpdate
     );
     const fee = await pyth.getUpdateFee(priceUpdateData);
+    console.log(fee, JSON.stringify(priceUpdateData));
 
     callData.push({
-      to: CONTRACT_ADDR["arbitrum"],
+      to: pythContract,
       data: pyth.interface.encodeFunctionData("updatePriceFeeds", [
         priceUpdateData,
       ]),
