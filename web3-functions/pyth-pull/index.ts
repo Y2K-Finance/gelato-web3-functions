@@ -61,7 +61,9 @@ Web3Function.onRun(async (context: Web3FunctionContext) => {
 
   // Determine which price feeds need to be updated
   const priceFeedIdsToUpdate = [];
-  const stalePeriod = 86400;
+  const stalePeriod = parseInt(
+    (await context.secrets.get("STALE_PERIOD")) || "86400"
+  );
   for (const feed of latestPriceFeeds) {
     const returnData =
       priceGetCallResults.results[feed.id].callsReturnContext[0];
@@ -94,24 +96,24 @@ Web3Function.onRun(async (context: Web3FunctionContext) => {
     }
   }
 
+  if (priceFeedIdsToUpdate.length == 0) {
+    return { canExec: false, message: `No price feed to update` };
+  }
+
   // Prepare pyth price update calldata
   const callData = [];
   const pyth = new Contract(pythContract, PYTH_ABI, provider);
-  if (priceFeedIdsToUpdate.length) {
-    const priceUpdateData = await connection.getPriceFeedsUpdateData(
-      priceFeedIdsToUpdate
-    );
-    const fee = await pyth.getUpdateFee(priceUpdateData);
-    console.log(fee, JSON.stringify(priceUpdateData));
+  const priceUpdateData = await connection.getPriceFeedsUpdateData(
+    priceFeedIdsToUpdate
+  );
+  const fee = await pyth.getUpdateFee(priceUpdateData);
+  // console.log(fee, JSON.stringify(priceUpdateData));
 
-    callData.push({
-      to: pythContract,
-      data: pyth.interface.encodeFunctionData("updatePriceFeeds", [
-        priceUpdateData,
-      ]),
-      value: fee.toString(),
-    });
-  }
+  callData.push({
+    to: pythContract,
+    data: pyth.encodeFunctionData("updatePriceFeeds", [priceUpdateData]),
+    value: fee.toString(),
+  });
 
   // Return execution call data
   return {
