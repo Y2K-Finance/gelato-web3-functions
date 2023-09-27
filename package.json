@@ -65,9 +65,11 @@
     "@gelatonetwork/automate-sdk": "^2.14.0-beta",
     "@gelatonetwork/web3-functions-sdk": "^2.1.2",
     "@pythnetwork/pyth-evm-js": "^1.20.1",
+    "@redstone-finance/evm-connector": "^0.3.3-alpha.0",
     "ethereum-multicall": "^2.19.0",
     "graphql": "^16.7.1",
     "graphql-request": "^6.1.0",
-    "ky": "^0.33.2"
+    "ky": "^0.33.2",
+    "redstone-api": "^0.4.11"
   }
 }
