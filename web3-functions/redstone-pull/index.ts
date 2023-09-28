@@ -6,24 +6,23 @@ import { WrapperBuilder } from "@redstone-finance/evm-connector";
 import { Contract } from "@ethersproject/contracts";
 import { BigNumber, ethers } from "ethers";
 import { PROVIDER_ABI } from "./abi";
-import { fetchOracleData } from "./helper";
+import { fetchLatestPrice, fetchOracleData } from "./helper";
 import { DIVISION_FACTOR } from "./constants";
 
 Web3Function.onRun(async (context: Web3FunctionContext) => {
   // Init Providers
   const { multiChainProvider } = context;
   const provider = multiChainProvider.default();
-  const arbRedstoneAdapter = await context.secrets.get("REDSTONE_ADAPTER");
-  if (!arbRedstoneAdapter) {
-    return { canExec: false, message: `REDSTONE_ADAPTER not set in secrets` };
-  }
+  // const arbRedstoneAdapter = await context.secrets.get("REDSTONE_ADAPTER");
+  // if (!arbRedstoneAdapter) {
+  //   return { canExec: false, message: `REDSTONE_ADAPTER not set in secrets` };
+  // }
 
   // Fetch data
   const y2kBackendUrl = await context.secrets.get("Y2K_BACKEND_URL");
   if (!y2kBackendUrl) {
     return { canExec: false, message: `Y2K_BACKEND_URL not set in secrets` };
   }
-
   const oracleData = await fetchOracleData(y2kBackendUrl);
   console.log(`Read data feeds to track: ${JSON.stringify(oracleData)}`);
 
@@ -43,12 +42,11 @@ Web3Function.onRun(async (context: Web3FunctionContext) => {
   console.log(`Redstone data feed ids: ${dataFeeds}`);
 
   // Read Latest Redstone Prices
-  const wrappedProvider = WrapperBuilder.wrap(
-    universalProvider
-  ).usingDataService({
-    dataFeeds,
-  });
-  const latestPrices = await wrappedProvider.extractPrice(marketIds);
+  const redstoneGatewayUrl = await context.secrets.get("REDSTONE_GATEWAY");
+  if (!redstoneGatewayUrl) {
+    return { canExec: false, message: `REDSTONE_GATEWAY not set in secrets` };
+  }
+  const latestPrices = await fetchLatestPrice(redstoneGatewayUrl, dataFeeds);
   console.log(`Extracted ${latestPrices.length} price feeds: ${latestPrices}`);
 
   // Read last updated prices
@@ -61,26 +59,24 @@ Web3Function.onRun(async (context: Web3FunctionContext) => {
     (await context.secrets.get("STALE_PERIOD")) || "86400"
   );
   for (let i = 0; i < marketIds.length; i++) {
-    const decimalsDiff = 10;
-    const onChainPrice = BigNumber.from(priceData.prices[i]).div(
-      BigNumber.from(10).pow(decimalsDiff)
-    );
+    const onChainPrice = BigNumber.from(priceData.prices[i]).toNumber() / 1e8;
     const onChainPublishTime = BigNumber.from(
       priceData.updatedAt[i]
     ).toNumber();
     const now = Math.floor(Date.now() / 1000);
-    const offChainPrice = BigNumber.from(latestPrices[i]);
+    const offChainPrice = latestPrices[i];
     const allowedDivation = oracleData.markets[marketIds[i]];
 
-    if (offChainPrice.isZero() || !allowedDivation) continue;
+    if (offChainPrice == 0 || !allowedDivation) continue;
 
     const timeDiff = now - onChainPublishTime;
-    const curDeviation = onChainPrice
-      .sub(offChainPrice)
-      .abs()
-      .mul(DIVISION_FACTOR)
-      .div(offChainPrice)
-      .toNumber();
+    const curDeviation =
+      (Math.abs(onChainPrice - offChainPrice) * DIVISION_FACTOR) /
+      offChainPrice;
+
+    console.log(
+      `${dataFeeds[i]} price feed's time diff is ${timeDiff} and deviation is ${curDeviation}`
+    );
 
     // Update if exceeds deviation allowance or staled for 24 hours
     if (curDeviation > allowedDivation || timeDiff > stalePeriod) {
@@ -95,6 +91,11 @@ Web3Function.onRun(async (context: Web3FunctionContext) => {
   }
 
   // Return execution call data
+  const wrappedProvider = WrapperBuilder.wrap(
+    universalProvider
+  ).usingDataService({
+    dataFeeds,
+  });
   const { data } = await wrappedProvider.populateTransaction.updatePrices(
     marketIds
   );
@@ -105,7 +106,7 @@ Web3Function.onRun(async (context: Web3FunctionContext) => {
     canExec: true,
     callData: [
       {
-        to: arbRedstoneAdapter,
+        to: providerContract,
         data,
       },
     ],

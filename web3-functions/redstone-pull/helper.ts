@@ -43,3 +43,15 @@ export const fetchOracleData = async (
   const { oracleData } = await data.json();
   return oracleData;
 };
+
+export const fetchLatestPrice = async (
+  endpoint: string,
+  dataFeeds: string[]
+): Promise<number[]> => {
+  const data = await fetch(
+    `${endpoint}/data-packages/latest/redstone-primary-prod`
+  );
+  const result = await data.json();
+  const prices = dataFeeds.map((feed) => result[feed][0].dataPoints[0].value);
+  return prices;
+};
